@@ -1,0 +1,63 @@
+{
+  "summary": "First-run full-stack QA of Luméa premium e-commerce app. Backend: created pytest suite (37 tests) covering health, auth (register/login/JWT/RBAC/bcrypt), product CRUD + filters/search/sort, cart, wishlist, reviews, coupons (create/delete/validate), demo-mode checkout + order verify + stock decrement, admin stats/orders/status, and Emergent object-storage image upload/download — 33/37 passed (89%). Frontend: Playwright coverage of storefront (home/shop/filters/search/sort), register+auto-login, product detail + review posting, wishlist, full cart CRUD + subtotal, checkout with coupon, demo order placement, /orders tracker, guest route gating, and all 4 admin screens (dashboard charts/stats, inventory create-with-image-upload/edit/delete, coupon create/delete, order status change with persistence). All features work EXCEPT one HIGH redirect bug on Checkout. Razorpay DEMO MODE confirmed working as intended.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/orders/verify", "issue": "No ownership check. Any authenticated user can finalize ANY order by passing another user's order_id — returns 200, marks it paid and decrements that order's stock (test_order_ownership_isolation). Also idempotency is missing: calling verify twice on the same order decrements stock twice. Add `order['user_id'] != user['id'] -> 403/404` and skip if already payment_status=='paid'.", "priority": "CRITICAL"},
+      {"endpoint": "POST /api/checkout + /api/orders/verify", "issue": "No stock validation. Ordering qty 5 of a product with stock 1 succeeds and stock goes to -4 (test_oversell_stock_guard). Validate available stock in compute_totals/checkout and reject with 400.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/products/{id} (and all ObjectId routes: /orders/{id}, /admin/orders/{id}/status, /coupons/{id}, /wishlist/{id}, PUT|DELETE /products/{id})", "issue": "Malformed id raises bson.errors.InvalidId -> HTTP 500 (confirmed in backend.err.log). Wrap ObjectId() in a helper that raises 404/400."},
+      {"endpoint": "POST /api/auth/login", "issue": "No brute-force lockout — 6+ consecutive wrong passwords all return 401, no 429/423 (playbook requirement item 4). No rate limiting on register either."},
+      {"endpoint": "CORS middleware", "issue": "allow_credentials=True combined with CORS_ORIGINS='*' is an invalid/ignored combination per the CORS spec (playbook item 3 asks for explicit origins). Harmless today because auth uses Bearer headers, not cookies."},
+      {"endpoint": "POST /api/coupons/validate", "issue": "Dead/confusing signature: `inp: CouponInput = None` body param is never used while code/amount come from query params. Remove the unused body model."},
+      {"endpoint": "POST /api/products/{id}/reviews", "issue": "No duplicate-review guard and no purchase check — the same user can post unlimited reviews on the same product, skewing the average rating."},
+      {"endpoint": "GET /api/products/{id}", "issue": "Review objects returned to the public include raw user_id."},
+      {"endpoint": "POST /api/upload", "issue": "No content-type/size validation — any file type up to unlimited size is accepted and stored as a product image."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Checkout.jsx (line 72)", "issue": "HIGH: `if (cart.length === 0) { navigate('/cart'); return null; }` navigates during render. Two user-visible defects: (1) after a successful demo order the cart is cleared by refresh(), the component re-renders empty and this render-phase navigate overrides navigate('/orders') — the user lands on /cart (empty bag) instead of the order confirmation, so it looks like the order failed (it was actually created & paid — verified in /orders and admin). (2) Deep-linking or refreshing /checkout always bounces to /cart because cart is [] on first render before StoreContext finishes loading. Fix: move the guard into useEffect with a loading flag, and set a `placed` ref/state so it does not fire after checkout.", "selector": "[data-testid=\"place-order-btn\"]", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "Place order (demo mode)", "issue": "Order IS created, paid, cart cleared and stock decremented, but the user is redirected to /cart instead of /orders (see Checkout.jsx render-navigate bug). React console warning reproduces every time: 'Cannot update a component (BrowserRouter) while rendering a different component (Checkout)'.", "affected_selectors": ["[data-testid=\"place-order-btn\"]", "[data-testid=\"cart-subtotal\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Admin Dashboard - Revenue by Category", "issues": ["Orders whose product was later deleted are bucketed as 'other', which dominated the chart (₹16k 'other'). Consider persisting the category on the order item at checkout time instead of re-looking-up the product."]},
+      {"screen": "Orders page tracker", "issues": ["Minor: for a 'confirmed' order both PENDING and CONFIRMED steps render filled/black, which reads as two active states; acceptable but slightly ambiguous."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "FIX HIGH: Checkout.jsx line 72 — replace render-phase navigate('/cart') with a useEffect guard + loading/placed flag so the post-order navigate('/orders') survives and /checkout can be refreshed.",
+    "FIX CRITICAL: add ownership + idempotency checks to POST /api/orders/verify (reject other users' order_ids; do not re-decrement stock for already-paid orders).",
+    "FIX HIGH: validate stock in POST /api/checkout so items cannot be oversold / stock cannot go negative.",
+    "FIX: add a safe_object_id() helper so malformed ids return 404 instead of 500 across all ObjectId routes.",
+    "ADD: login brute-force lockout / rate limiting (playbook requirement).",
+    "SET explicit CORS_ORIGINS instead of '*' while allow_credentials=True.",
+    "Strip user_id from public review payloads; add duplicate-review guard; validate upload mime type/size."
+  ],
+  "critical_code_review_comments": [
+    "Checkout.jsx: side-effect (navigate) executed in render body — React anti-pattern, already causing the wrong post-order redirect and a console warning.",
+    "server.py: every route builds ObjectId(...) from raw path params with no validation — guaranteed 500s from untrusted input.",
+    "server.py verify_payment(): fetches the order but never authorizes it against the caller — horizontal privilege escalation.",
+    "server.py compute_totals(): computes money but never checks inventory; stock is decremented with an unguarded $inc, allowing negative stock.",
+    "server.py startup(): seed_admin correctly re-hashes when ADMIN_PASSWORD changes and is idempotent — verified OK; bcrypt hashes verified to start with $2b$.",
+    "Auth design uses Bearer token in localStorage (not httpOnly cookies) — matches the stated product design, but note it is XSS-exposed; playbook cookie items 2 are N/A for this build."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py"
+  ],
+  "success_rate": {"backend": "89% (33/37 pytest)", "frontend": "92% (all flows pass except checkout post-order redirect)"},
+  "seed_data_creation": "Registered throwaway customers (TEST_cust_*@example.com, qa_*@example.com / Test@12345). All TEST_ products/coupons created by pytest were deleted in teardown; a few TEST_ orders remain in db.orders (orders have no delete endpoint) and are visible in admin.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin: ayanpratapsingh1@gmail.com / Admin@12345 (works, routes to /admin). Customers created on the fly. NOTE: EmailStr rejects reserved TLDs like .test/.local — use @example.com for test accounts.",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/ -v` (pytest.ini pins -n 2 --dist loadscope). Expected remaining failures until fixed: test_order_ownership_isolation, test_oversell_stock_guard, test_invalid_product_id_returns_404, test_brute_force_lockout. Frontend: everything verified working — home/shop/filters/search/sort, register+login, product detail + review, wishlist, cart CRUD, coupon apply (WELCOME10 10%, SAVE20 20% min 5000), demo order creation, /orders tracker, guest gating to /login, admin dashboard charts, inventory CRUD with real Emergent object-storage image upload, coupon CRUD, admin order status persistence. Only re-verify the Checkout redirect (should land on /orders) and the two backend security/stock fixes.",
+  "rca_of_the_issue": "Checkout redirect: Checkout.jsx executes navigate('/cart') inside the render body when cart.length===0. placeOrder() awaits refresh() which empties the cart, triggering a re-render where that guard fires and wins over the queued navigate('/orders'); the same guard also fires on any direct load of /checkout before StoreContext hydrates. Order verify escalation: verify_payment() looks up the order by id only and never compares order['user_id'] to the authenticated user, and has no already-paid short-circuit. Oversell: compute_totals() and verify_payment() perform no stock checks and use an unguarded $inc: -qty."
+}

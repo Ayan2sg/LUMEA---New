@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration-2 retest of Luméa e-commerce. Backend: extended pytest suite to 40 tests (added test_oversell_strict_400, test_verify_idempotent, test_malformed_objectid_routes) — 38/40 pass (95%). All 3 previously-failing security/stock tests now PASS: order verify ownership (404 for another user's order + /orders/{id} leak closed), verify idempotency (double verify keeps stock at 7, order stays paid), oversell rejected with 400 and stock never negative (2-in-stock product: qty3 -> 400, qty2 -> 200 and stock 0), malformed ObjectId returns 4xx on products/orders/verify/coupons/admin-status/wishlist. Frontend: demo checkout HIGH bug FIXED — place-order now lands on /orders with the paid order + tracker visible. Remaining: (1) direct load/refresh of /checkout with items still bounces to /cart (StoreContext has no hydration flag), (2) NEW HIGH backend bug: POST /api/cart with a malformed product_id 500s AND permanently bricks the user's cart (GET /cart and POST /checkout 500 forever). Light regression all green: admin login->/admin, dashboard stats/charts (category now persisted, 'other' only legacy), inventory create-with-image-upload/edit/delete, coupon create/delete, admin order status change persists after reload, register/login, product listing (8)/detail/review posting, wishlist toggle + wishlist page, cart qty update/remove/subtotal, WELCOME10 & SAVE20 apply, guest gating to /login.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/cart", "issue": "Malformed product_id (e.g. 'badid') is written into the cart doc BEFORE get_cart_detailed() calls raw ObjectId(it['product_id']) -> 500. The bad id persists, so GET /api/cart and POST /api/checkout return 500 forever for that user — cart permanently bricked with no way to recover from the UI. Fix: validate product_id with oid() (and verify the product exists) before writing, and make get_cart_detailed skip/drop invalid ids.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/auth/login", "issue": "Still no brute-force lockout/rate limit — 6 consecutive wrong passwords all return 401 (playbook item 4). test_brute_force_lockout fails."},
+      {"endpoint": "CORS middleware", "issue": "allow_credentials=True with CORS_ORIGINS='*' remains (playbook item 3 wants explicit origins). Harmless today (Bearer tokens, no cookies)."},
+      {"endpoint": "POST /api/products/{id}/reviews", "issue": "Still no duplicate-review / purchase guard; a user can post unlimited reviews on one product."},
+      {"endpoint": "POST /api/upload", "issue": "No content-type/size validation."},
+      {"endpoint": "POST /api/coupons/validate", "issue": "Unused `inp: CouponInput = None` body param still present (dead signature)."},
+      {"endpoint": "POST /api/checkout", "issue": "Rounding mismatch: backend charges 110398.4 for SAVE20 on 137998 subtotal while the UI shows/promises ₹1,10,398 (frontend Math.round on discount). Round to 2dp consistently or round discount the same way on both sides."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Checkout.jsx + StoreContext.js", "issue": "HIGH (partially fixed): post-order navigate('/orders') now works, but direct load/refresh of /checkout with items in the cart STILL redirects to /cart. StoreContext has no `loaded/loading` flag, so the useEffect guard fires on the first render while cart is still []. Fix: expose a `loaded` boolean from StoreContext and gate the guard with `if (loaded && !placedRef.current && cart.length === 0)`.", "selector": "[data-testid=\"place-order-btn\"]", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Orders page tracker", "issues": ["For a 'confirmed' order both PENDING and CONFIRMED steps render filled/black — reads as two active states (cosmetic, unchanged from iteration 1)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/tests/cart_poison_check.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "FIX HIGH: validate product_id in POST /api/cart (use oid() + product-exists check) and make get_cart_detailed() skip invalid ids — currently one bad id permanently 500s GET /cart and /checkout for that user.",
+    "FIX HIGH: add a `loaded` flag to StoreContext and gate the Checkout empty-cart useEffect so /checkout can be deep-linked/refreshed with items in the cart.",
+    "Align SAVE20/WELCOME10 rounding between frontend display and backend total.",
+    "Optional/playbook: login brute-force lockout, explicit CORS_ORIGINS, duplicate-review guard, upload mime/size validation."
+  ],
+  "critical_code_review_comments": [
+    "get_cart_detailed() and add_to_cart() are the only remaining places that build ObjectId() from unvalidated input — the oid() helper was not applied there.",
+    "add_to_cart persists the item before it is validated, turning a transient 400-class error into permanent data corruption; validate first, then write.",
+    "StoreContext exposes no loading state, forcing every consumer (Checkout, Cart) to guess whether an empty cart means 'empty' or 'not loaded yet'.",
+    "verify_payment() ownership + already-paid short-circuit and checkout stock validation verified correct and idempotent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/tests/cart_poison_check.py"
+  ],
+  "success_rate": {"backend": "95% (38/40 pytest)", "frontend": "95% (all flows pass except direct /checkout deep-link)"},
+  "seed_data_creation": "Registered throwaway customers qa_*/qa2_*/qa3_*@example.com and TEST_*@example.com (password Test@12345). pytest products/coupons deleted in teardown; TEST_ orders remain in db.orders (no delete endpoint). One admin order was set to 'delivered' during the status-persistence test.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin: ayanpratapsingh1@gmail.com / Admin@12345 (routes to /admin). Customers registered on the fly with @example.com.",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/ -v` (40 tests). Expected failures until fixed: test_brute_force_lockout (no rate limiting) and test_malformed_objectid_routes (POST /api/cart with bad product_id -> 500; reproduce standalone with `python /app/tests/cart_poison_check.py`, which also shows GET /cart and /checkout 500 afterwards). Frontend: only re-verify the /checkout deep-link guard; everything else (checkout->/orders, admin CRUD + image upload, coupons, order status, wishlist, reviews, cart CRUD) was verified working this iteration. Admin page testids: form-name/form-desc/form-price/form-stock/form-category/file-input/save-product-btn, edit-{id}/delete-{id}, coupon-code/coupon-discount/coupon-min/save-coupon-btn/delete-coupon-{id}, status-select-{orderId}. Storefront: product-name/product-price/qty-plus/add-to-cart-btn/wishlist-detail-btn/rate-5/review-comment/submit-review-btn, cart-subtotal/remove-{id}/checkout-btn, order-{id}.",
+  "rca_of_the_issue": "Cart bricking: add_to_cart() writes {product_id} into db.carts before any validation, then get_cart_detailed() runs ObjectId(it['product_id']) unguarded -> bson InvalidId -> 500; because the invalid id is now stored, every subsequent GET /cart and compute_totals() call raises the same 500. Checkout deep-link: StoreContext initialises cart=[] and fetches asynchronously without exposing a loaded flag, so Checkout's useEffect guard sees an empty cart on first render and navigates to /cart before hydration completes."
+}

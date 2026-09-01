@@ -1,0 +1,71 @@
+{
+  "summary": "Iteration-3 testing of Lumea e-commerce covering the 4 new features + light regression. Backend: pytest suite grown to 50 tests (added TestLiveRazorpay, TestOrderEmails, TestProductGallery; TestReviews rewritten for verified-buyer rules) -> 49/50 pass (98%). Verified: (1) POST /api/products/{id}/reviews returns 403 'Only verified buyers can review this product' for a non-purchaser AND for a user whose order is payment_status='pending'; returns 200 for a user with a PAID order (seeded directly in db.orders); a second review returns 400 'You have already reviewed this product' and rating/review_count stay at 1/4; rating still clamped to 5. (2) Live Razorpay: POST /api/checkout returns demo_mode=false, razorpay_order.id starting 'order_', amount == total*100, currency INR, razorpay_key_id == rzp_test_TUkfU67KaGDFQI, and razorpay_order_id persisted on the order; a forged signature is rejected with 400 and the order stays pending. (3) Emails: /api/orders/verify -> 200 (no 5xx) and backend logs show 8x 'POST .../api/v1/email/send \"HTTP/1.1 202 Accepted\"'; PUT /api/admin/orders/{id}/status?status=shipped|delivered returns 200, persists status, and fires the shipping email (202). _assert_safe_email correctly rejects forms and http:// links and accepts the real _email_shell output. Frontend: gallery-main + 3 thumbs render, gallery-thumb-N switches the main image, gallery-next/gallery-prev cycle and wrap correctly, no broken images; verified-review UI happy path + duplicate (400) + non-buyer (403) all show the right toast; Razorpay Test-Mode modal opens from place-order-btn with prefilled email. Regression green: storefront, wishlist toggle+page, cart qty+/remove/subtotal, coupon apply, orders page, admin login->/admin, dashboard stats/charts, inventory list (8), admin order status selects (39 orders). Two carry-over defects are STILL unfixed: /checkout deep-link/refresh bounces to /cart, and the coupon rounding mismatch is now user-visible inside the live Razorpay modal (app says Rs.858, Razorpay charges 858.1).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/checkout", "issue": "Rounding mismatch now visible to the payer: subtotal 899 + WELCOME10 -> backend total 858.1 -> Razorpay amount 85810 paise. The app UI and Razorpay 'Price Summary' disagree (Rs.858 vs 858.1). Round the discount/total to whole rupees (or 2dp) identically on both sides."},
+      {"endpoint": "POST /api/auth/login", "issue": "Still no brute-force lockout/rate limit - 6 consecutive wrong passwords all return 401. test_brute_force_lockout is the single failing test (playbook item 4)."},
+      {"endpoint": "send_email() / EMAIL proxy", "issue": "Emergent email proxy rate-limits: the 9th send in a short burst returned 429 Too Many Requests. Handled gracefully (logged, returns None, endpoint still 200), but bulk status updates will silently drop emails. Consider retry/backoff or queueing."},
+      {"endpoint": "verify_payment() / update_order_status()", "issue": "email_order_confirmation/email_shipping_update are awaited inline in the request path (httpx timeout=30), so a slow/failing proxy adds up to 30s latency to /orders/verify and admin status updates. Use FastAPI BackgroundTasks."},
+      {"endpoint": "SEED_PRODUCTS (server.py)", "issue": "Each seed product still has exactly ONE image, so on a fresh database the new gallery (thumbs + arrows) never renders. The multi-image data currently in the DB was added ad-hoc and is not reproducible from code."},
+      {"endpoint": "CORS middleware", "issue": "allow_credentials=True with CORS_ORIGINS='*' (playbook item 3 wants explicit origins). Harmless today (Bearer tokens, no cookies)."},
+      {"endpoint": "POST /api/upload", "issue": "No content-type/size validation."},
+      {"endpoint": "POST /api/coupons/validate", "issue": "Unused `inp: CouponInput = None` body param still present (dead signature)."},
+      {"endpoint": "db.orders", "issue": "Abandoned live-Razorpay orders stay payment_status='pending' forever (39 orders, most pending). No TTL/cleanup, and admin can still move a never-paid order to 'shipped' (which fires a shipping email for an unpaid order)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StoreContext.js + Checkout.jsx", "issue": "HIGH, NOT FIXED (repeat from iteration 2): direct load/refresh of /checkout with items in the cart still redirects to /cart. RCA: StoreProvider's refresh() ignores AuthContext's `loading`; on a hard reload user is null for the first tick, so refresh() takes the `if (!user)` branch, sets cart=[] AND loaded=true immediately, and Checkout's guard fires before /auth/me resolves. Fix: pull `loading: authLoading` from useAuth and `if (authLoading) return;` at the top of refresh() (keep loaded=false until auth settles).", "selector": "[data-testid=\"place-order-btn\"]", "priority": "HIGH"},
+      {"component": "Checkout.jsx / Razorpay modal", "issue": "Amount shown to the customer (Rs.858 via inr()) differs from the amount in the Razorpay modal (858.1). Same rounding bug as backend; user-facing on a live payment screen.", "selector": "[data-testid=\"checkout-total\"]", "priority": "MEDIUM"},
+      {"component": "Cart.jsx", "issue": "Cart quantity +/- buttons had NO data-testid (untestable). FIXED by me: added cart-qty-plus-{id}, cart-qty-minus-{id}, cart-qty-{id}.", "selector": "[data-testid^=\"cart-qty-plus-\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Product detail gallery (content quality)", "issues": [
+        "Gallery images are recycled photos from OTHER products, not alternate views: 'Ivory Wrap Midi Dress' (Fashion) image 3 is an electronics flat-lay (iPad/phone case/AirPods); 'Minimal Canvas Tote' image 2 is a laptop; 'Ceramic Pour-Over Set' image 2 is a laptop.",
+        "'iPad + iPhone Creator Duo' has the SAME url (photo-1572784040789) as image 1 AND image 3 - the gallery shows a duplicate slide with 3 dots.",
+        "Prev/next arrows are opacity-0 until hover on the main image, so on touch devices there is no visible way to cycle (thumbnails still work)."
+      ]},
+      {"screen": "Orders page tracker", "issues": ["For a 'confirmed' order both PENDING and CONFIRMED steps render filled/black - reads as two active states (unchanged from iterations 1-2)."]},
+      {"screen": "ProductDetail reviews", "issues": ["The 'Write a review' form is rendered for everyone; non-buyers only discover they cannot review after submitting and getting an error toast. Consider hiding/disabling the form when the user has no paid order for the product."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/tests/check_images.py",
+    "/app/tests/seed_ui_buyer.py",
+    "/app/tests/cart_poison_check.py"
+  ],
+  "action_items": [
+    "FIX HIGH: StoreContext.refresh() must wait for AuthContext `loading` before setting loaded=true, so /checkout survives refresh/deep-link.",
+    "FIX: align coupon rounding between frontend display, backend total and the Razorpay amount (Rs.858 vs 858.1 on the live payment modal).",
+    "FIX: add 2-3 real alternate images per product to SEED_PRODUCTS so the gallery is reproducible on a fresh DB, and replace the cross-category / duplicated gallery images currently in the DB (dress showing electronics, tote showing a laptop, iPad Duo repeating image 1 as image 3).",
+    "Move email_order_confirmation / email_shipping_update to BackgroundTasks (currently blocking, up to 30s) and handle the proxy's 429 rate limit.",
+    "Guard admin status transitions: do not allow shipped/delivered (and shipping emails) for orders with payment_status != 'paid'; consider expiring abandoned pending orders.",
+    "Optional/playbook: login brute-force lockout, explicit CORS_ORIGINS, upload mime/size validation, make gallery arrows visible on touch."
+  ],
+  "critical_code_review_comments": [
+    "add_review() correctly scopes the paid-order check with {user_id, payment_status:'paid', items.product_id} and the duplicate check on {product_id,user_id} - logic verified for both 403 and 400 paths.",
+    "update_order_status() does not verify the order is paid before emailing 'Your order has shipped'; an unpaid/abandoned order can trigger a customer shipping email.",
+    "send_email() swallows every exception and returns None, so a permanently broken email provider is invisible to callers and to monitoring - log level is fine but add a metric/alert or at least surface it in the admin response.",
+    "SEED_PRODUCTS is the single source of truth for a fresh install and still ships 1 image per product, so the new gallery feature is not reproducible from code.",
+    "server.py is 711 lines and mixes email templating (_EmailScan/_assert_safe_email/_email_shell), storage, auth and all routers - split into modules (emails.py, routers/*) before it grows further."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/frontend/src/pages/Cart.jsx",
+    "/app/tests/check_images.py",
+    "/app/tests/seed_ui_buyer.py"
+  ],
+  "success_rate": {"backend": "98% (49/50 pytest)", "frontend": "92% (all new features pass; /checkout deep-link refresh still broken)"},
+  "seed_data_creation": "Registered UI test buyer qa_ui_03942204@example.com / Test@12345 with a manually seeded PAID order for product 6a72484d05943d17f8281b81 (Ivory Wrap Midi Dress) - used for the verified-review UI flow; it posted one real 4-star review ('QA verified buyer review') which reset that product's rating to 4.0 / review_count 1. pytest creates/deletes TEST_ products, coupons and orders (seed_paid_order fixture cleans up its docs; reviews cleaned via mongo). Two extra pending orders for qa_ui_* remain in db.orders from the abandoned Razorpay modal test. One TEST_ order was moved to shipped then delivered.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin: ayanpratapsingh1@gmail.com / Admin@12345 (routes to /admin). Verified-buyer customer: qa_ui_03942204@example.com / Test@12345 (has a paid order for product 6a72484d05943d17f8281b81 and has ALREADY reviewed it - use a fresh account + seeded order to retest the 200 path).",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/ -v` (50 tests). Only expected failure: TestAuth::test_brute_force_lockout (no rate limiting). New fixtures in conftest.py: `mongo_db` (pymongo handle from backend/.env) and `seed_paid_order(user_id,user_email,user_name,product,quantity,status,payment_status)` -> inserts a paid order and auto-deletes it; use it for any verified-review or shipping-email test. Multi-image products (for gallery): 6a72484d05943d17f8281b81/83/85/86 have 3 images, 82/84/87/88 have 2. Frontend routes are /shop and /product/:id (NOT /products). Gallery arrows are opacity-0 until you hover [data-testid=\"gallery-main\"]. Razorpay modal detection: page.frames containing 'razorpay' or locator('.razorpay-container'); do not complete the payment. To retest the /checkout deep-link bug: login, add an item, navigate to /checkout, then page.reload() - it currently lands on /cart. Everything else (verified reviews UI 200/400/403, both email triggers, live checkout order creation, signature rejection, cart/wishlist/coupon/admin CRUD/status) was verified working this iteration.",
+  "rca_of_the_issue": "1) /checkout deep-link: StoreProvider consumes only `user` from AuthContext, not `loading`. On a hard reload AuthContext starts with user=null and asynchronously resolves /auth/me; StoreProvider's refresh() therefore takes the `if (!user)` early-return, sets cart=[] and loaded=true in the same tick, and Checkout's `if (loaded && !placedRef.current && cart.length === 0) navigate('/cart')` fires before the token is validated. Gating refresh() on authLoading fixes it. 2) Rounding: Checkout.jsx computes discount = Math.round(subtotal*pct/100*100)/100 (=89.9) and renders total with inr() which rounds to Rs.858, while the backend stores/charges round(subtotal-discount+shipping,2)=858.1 and sends int(total*100)=85810 paise to Razorpay, so the live modal shows 858.1. 3) Gallery content: the extra image URLs in db.products were copied from other seed products (and one duplicated within the same product) rather than being genuine alternate shots, and SEED_PRODUCTS was never updated, so a fresh DB has single-image products and no gallery."
+}

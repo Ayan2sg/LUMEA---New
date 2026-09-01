@@ -1,0 +1,140 @@
+{
+  "theme": "light",
+  "concept": "Editorial Future & Swiss Minimalist. An attractive, 'Godly' level modern e-commerce that breaks the generic layout. It bridges high-end fashion editorial layouts with precise, high-density dashboard utility.",
+  "typography": {
+    "headings": {
+      "family": "Clash Display, Cabinet Grotesk, sans-serif",
+      "weights": ["500", "600", "700"],
+      "usage": "H1-H4. High contrast, tight tracking (tracking-tight or tracking-tighter).",
+      "notes": "Never use Inter for headings. Keep headings left-aligned unless specific balance demands center."
+    },
+    "body": {
+      "family": "Satoshi, Outfit, sans-serif",
+      "weights": ["400", "500"],
+      "usage": "Paragraphs, labels, button text. Clean, readable and geometric.",
+      "notes": "Use loose line height (leading-relaxed) for body text."
+    }
+  },
+  "colors": {
+    "archetype": "Swiss & High-Contrast mixed with Luxury",
+    "storefront": {
+      "background": "#FFFFFF",
+      "surface": "#F7F7F8",
+      "text_primary": "#0A0A0A",
+      "text_secondary": "#52525B",
+      "primary_action": "#000000",
+      "primary_action_text": "#FFFFFF",
+      "accent": "#E11D48",
+      "border": "#E5E7EB"
+    },
+    "dashboard": {
+      "background": "#F9FAFB",
+      "surface": "#FFFFFF",
+      "sidebar_bg": "#0A0A0A",
+      "sidebar_text": "#F3F4F6",
+      "sidebar_active": "#1F2937",
+      "text_primary": "#111827",
+      "border": "#E5E7EB",
+      "primary_action": "#0A0A0A",
+      "chart_accents": ["#111827", "#6366F1", "#10B981", "#F59E0B"]
+    },
+    "notes": "No generic full-screen gradients. Use solid colors. Tint neutral greys slightly with blue or orange."
+  },
+  "layouts": {
+    "storefront_home": "MODE A: TETRIS GRID. Asymmetrical grid (grid-cols-1 md:grid-cols-12), large hero image spanning 8 cols, 4 cols for text and secondary imagery. Value negative space. Avoid standard Bootstrap columns.",
+    "product_grid": "Grid with wide gap-8 to gap-12. Images max-h-[80vh]. Avoid equal squares if possible, mix aspect ratios or use offset alignment.",
+    "product_detail": "Zoom in. Large, immersive product imagery taking 50-60% of the screen width. Sticky product info on the right.",
+    "dashboard": "MODE B: High Density Grid. grid-cols-1 md:grid-cols-3 lg:grid-cols-4, tight gaps (gap-6). Modular, rearrangeable widgets. Left sidebar navigation.",
+    "spacing": "Generous Spacing Philosophy. Use py-24 for sections. p-8 inside bordered containers."
+  },
+  "components": {
+    "buttons": "Sharp rectangular (rounded-none) or very subtle rounding (rounded-sm) to match the editorial brutalist vibe. Hover: invert colors or translate-y-1 with subtle shadow. No pill shapes for this theme.",
+    "cards": "Storefront: Cardless, just images and typography. Dashboard: 1px border border-black/10, no heavy shadows. Flat solid backgrounds.",
+    "inputs": "Shadcn default but highly customized. 1px solid border, focus-visible:ring-1 focus-visible:ring-black. rounded-none.",
+    "navigation": "Sticky, 'Crystal' Glassmorphism (backdrop-blur-xl bg-white/70) for storefront. Solid dark for dashboard sidebar.",
+    "overlays": "Max overlay opacity: bg-black/30. If you can't clearly identify what's in the hero image, the overlay is too heavy.",
+    "toasts": "Sonner (bottom-right), styled to match minimalist aesthetic."
+  },
+  "visual_enhancers": {
+    "borders": "1px delicate strokes, border-border. Use Grid Borders (Technical Look) for feature/data sections.",
+    "shadows": "Ambient + direct layered shadows, but kept extremely minimal. Prefer sharp contrasts over blurry shadows.",
+    "motion": "Framer Motion. Hover micro-interactions (e.g., image zoom in slightly on hover). Smooth entrance animations.",
+    "textures": "Subtle grain overlays to kill the digital flatness on large image blocks."
+  },
+  "accessibility": {
+    "contrast": "Ensure 4.5:1 ratio for normal text. Check hover/focus states to guarantee text remains visible.",
+    "focus": "Clear focus rings on all interactive elements. focus:ring-black.",
+    "aria": "Use aria-hidden for decorative elements."
+  },
+  "media": {
+    "image_style": "High editorial, minimal background distraction, lifestyle contextualization.",
+    "aspect_ratio": "Product lists: 3:4 (Portrait) for fashion, 1:1 or 4:3 for electronics."
+  },
+  "image_urls": {
+    "fashion": [
+      {
+        "url": "https://images.pexels.com/photos/30590675/pexels-photo-30590675.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Stylish woman in a white dress",
+        "category": "Hero Section / Featured Category"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1687884578968-94d89d7e30cb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwxfHxmYXNoaW9uJTIwY2xvdGhpbmclMjBtb2RlbHxlbnwwfHx8fDE3ODU4NzQyNjF8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Woman on couch with hat",
+        "category": "Product Listing"
+      }
+    ],
+    "electronics": [
+      {
+        "url": "https://images.unsplash.com/photo-1717996563514-e3519f9ef9f7?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODh8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBlbGVjdHJvbmljcyUyMGdhZGdldHN8ZW58MHx8fHwxNzg1ODc0MjYxfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Tablet and cell phone",
+        "category": "Hero Section / Featured Category"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1778854097052-5a04619c5e64?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODh8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBlbGVjdHJvbmljcyUyMGdhZGdldHN8ZW58MHx8fHwxNzg1ODc0MjYxfDA&ixlib=rb-4.1.0&q=85",
+        "description": "Smartphone with leica camera next to headphones",
+        "category": "Product Listing"
+      }
+    ],
+    "lifestyle": [
+      {
+        "url": "https://images.unsplash.com/photo-1572784040789-304f4cdacd62?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2ODh8MHwxfHNlYXJjaHwyfHxlY29tbWVyY2UlMjBsaWZlc3R5bGUlMjBwcm9kdWN0c3xlbnwwfHx8fDE3ODU4NzQyNjF8MA&ixlib=rb-4.1.0&q=85",
+        "description": "black iPhone beside white iPad",
+        "category": "Product Listing"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1605629921852-f9b3d997c14a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2ODh8MHwxfHNlYXJjaHw0fHxlY29tbWVyY2UlMjBsaWZlc3R5bGUlMjBwcm9kdWN0c3xlbnwwfHx8fDE3ODU4NzQyNjF8MA&ixlib=rb-4.1.0&q=85",
+        "description": "woman in white shirt using black laptop computer",
+        "category": "Lifestyle Context / Blog / About"
+      }
+    ]
+  },
+  "icons_library": "lucide-react",
+  "instructions_to_main_agent": [
+    "Use pure HTML+Tailwind for storefront hero and creative layouts to achieve asymmetry. Do not force creative sections into rigid Shadcn Cards.",
+    "For interactive components (forms, dialogs, dropdowns, calendars, tables), heavily rely on Shadcn, but customize them by setting rounded-none and applying stark borders.",
+    "DO NOT use pure HTML for dropdowns or date pickers. Use Shadcn DropdownMenu and Calendar.",
+    "Add data-testid attributes to all interactive elements for testing.",
+    "In the admin dashboard, prioritize data clarity. Go cardless or use subtle borders. Do not use teal green (#1B93A4) for dashboards.",
+    "DO NOT use a completely transparent header. Use backdrop-blur-xl bg-white/70.",
+    "Utilize Framer Motion for entrance animations, hover states, and smooth transitions.",
+    "Do not use generic 'Inter' or 'Roboto' for storefront headings.",
+    "Always set explicit hover and focus text colors (e.g., hover:bg-black hover:text-white).",
+    "Use actual image URLs provided. Never use dummy image placeholders."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur).",
+    "You MUST NOT apply universal transition (e.g., transition: all). This breaks transforms. Always add transitions for specific interactive elements.",
+    "You MUST NOT center align the app container. Do not add .App { text-align: center; }.",
+    "Always use modern button styles (crisp rectangular for this theme) with interaction animations & color relevant to the app style.",
+    "NEVER use AI assistant Emoji characters like \ud83e\udd16\ud83e\udde0\ud83d\udcad\ud83d\udca1\ud83d\udd2e\ud83c\udfaf etc. for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Subtle grain textures, noise overlays, custom cursors, selection states, and loading animations separate good from extraordinary.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Use Sonner for toasts."
+  ]
+}

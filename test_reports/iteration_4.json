@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration-4 FIX VERIFICATION for Lumea e-commerce. Backend pytest suite: 53/53 PASS (added TestFixVerification: WELCOME10 whole-rupee rounding, gallery 2-3 images/no duplicates, can_review/has_reviewed flags). All 5 flagged fixes VERIFIED: (1) /checkout deep-link — logged-in user with a cart item navigates to /checkout and survives page.reload(), stays on /checkout (previously bounced to /cart) — StoreContext authLoading gate works. (2) Rounding — checkout-total renders Rs.858 (discount -Rs.90) for the Rs.899 Minimal Canvas Tote with WELCOME10; backend /api/checkout returns total 858.0, persisted order discount 90/total 858, razorpay_order.amount 85800 (no 858.1). (3) Galleries — dress/tote/laptop/coffee all show category-consistent images, 2-3 slides each, no duplicate slide within a product, no broken images; gallery-thumb-N switches main image, gallery-next/prev cycle and wrap; on 390px mobile gallery-next has opacity 0.8 and works. (4) Verified-review gating — anon sees review-locked ('Sign in and purchase...'), logged-in non-buyer sees review-locked ('Only verified buyers can review this product') with review-form absent, user with a PAID order sees review-form, posts once (review renders, toast 'Review posted'), then review-locked shows 'You've already reviewed this product'; backend still returns 403 (non-buyer/pending order) and 400 (duplicate). (5) Brute force — 5 wrong passwords return 401, 6th returns 429; a correct password during lockout is also 429. Regression green: shop 8 cards, category filter (Electronics -> 4), search 'tote' -> 1, price sort ascending, cart qty +/- and remove + empty-bag CTA, wishlist toggle+page, admin login redirects to /admin, dashboard stats+charts, inventory create-with-image-upload then delete, coupon create+delete, admin order status confirmed->shipped persists with 'Status updated' toast (shipping email gated on payment_status=='paid' in code).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "send_email() / Emergent email proxy", "issue": "Proxy rate-limits under bursts: 28x 429 vs 17x 202 in this run. send_email() swallows the error and returns None, so emails are silently dropped during bulk status updates. Still no retry/backoff/queue (carry-over from iteration 3)."},
+      {"endpoint": "POST /api/auth/login (login_attempts)", "issue": "Lockout counter is never reset when the 15-min window expires (only a successful login deletes the doc). After the window, a single wrong password bumps count 5->6 and re-locks the account for another 15 minutes instead of granting a fresh 5 attempts. Also no TTL index on login_attempts."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Product detail gallery (content quality, LOW)", "issues": [
+        "Electronics products swap each other's hero shots: 'Aurora Tablet Pro 11' slide 2 is the Leica-lens smartphone (and 'Leica-Lens Smartphone X' slide 2 is the tablet); 'iPad + iPhone Creator Duo' and 'Workspace Laptop Air 14' share photo-1496181133206; the two Fashion products share photo-1664076458686. Same-category so no longer jarring, but slide 2 is a different product, not an alternate view."
+      ]},
+      {"screen": "Orders page tracker (LOW, carry-over)", "issues": ["All completed stages render identically filled black, so the CURRENT stage is not visually distinguished from earlier ones (e.g. a 'confirmed' order shows PENDING and CONFIRMED both filled)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: add retry/backoff (or a queue) around send_email for the proxy's 429; consider surfacing send failures to admin.",
+    "Optional: reset login_attempts.count when the 15-minute lockout window has elapsed (and add a TTL index) so users regain a full 5 attempts.",
+    "Optional/content: give each Electronics/Fashion product its own alternate shots instead of reusing a sibling product's hero image."
+  ],
+  "critical_code_review_comments": [
+    "StoreContext.refresh() early-returns on authLoading and keeps loaded=false until auth settles - deep-link/refresh guard is now correct.",
+    "Checkout.jsx discount = Math.round(subtotal*pct/100) matches backend compute_totals whole-rupee rounding; Razorpay amount is derived from the same total (85800 paise verified).",
+    "update_order_status() now gates email_shipping_update on payment_status=='paid' and uses BackgroundTasks - both prior action items addressed.",
+    "get_product() computes can_review/has_reviewed from an optional Bearer token, so anonymous requests correctly get can_review=false without a 401.",
+    "server.py is still 743 lines mixing email templating, storage, auth and all routers - split into modules (emails.py, routers/*).",
+    "The 422 'Undeliverable recipient' seen in backend logs is the proxy blocking @example.com test addresses, not an app defect (verified by direct probe returning code 'undeliverable_recipient')."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "100% (53/53 pytest)", "frontend": "100% (all 5 fix-verification flows + regression pass)"},
+  "seed_data_creation": "Registered UI customer qa_i4_1787826254@example.com / Test@12345. Temporarily inserted a PAID order for that user + Minimal Canvas Tote to exercise the review-form path; the posted review and the seeded order were DELETED afterwards and the tote's rating/review_count were reset to 0/0. login_attempts collection cleared. pytest TEST_ products/coupons/orders/reviews cleaned by fixtures (0 TEST_ products remain).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Admin: ayanpratapsingh1@gmail.com / Admin@12345 (redirects to /admin). Customer: qa_i4_1787826254@example.com / Test@12345 (no orders/reviews left, reusable for gating tests).",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/ -v` -> 53 tests, all passing. IMPORTANT: TestAuth::test_brute_force_lockout now registers its own throwaway account and cleans login_attempts (it used to lock the shared admin email and cascade-fail 15 tests with 429). If a run ever fails with 'Admin login failed 429', clear db.login_attempts. New class TestFixVerification covers the 858/85800 rounding, gallery image constraints and can_review flags. Frontend routes: /shop, /product/:id, /checkout, /admin (nav testids admin-nav-inventory|orders|coupons). Cart testids: cart-item-{id}, cart-qty-{plus|minus}-{id}, remove-{id}. Gallery arrows are visible (opacity .8) on mobile. Emails to @example.com are rejected by the proxy with 422 'undeliverable_recipient' - not a bug; use a real domain or delivered@resend.dev when asserting 202.",
+  "rca_of_the_issue": "No new defects. Verified root-cause fixes: (a) StoreProvider now gates refresh() on AuthContext loading so Checkout's empty-cart guard cannot fire before /auth/me resolves; (b) both frontend and backend round the coupon discount to whole rupees so UI, stored order and the Razorpay paise amount agree (858 / 85800); (c) SEED/DB product images are now category-consistent and de-duplicated; (d) product detail renders review-form only when product.can_review, otherwise review-locked; (e) login enforces a 5-attempt/15-min lockout via db.login_attempts (429 on the 6th attempt)."
+}

@@ -1,0 +1,52 @@
+{
+  "summary": "Iteration 5 full-stack QA of (A) admin Sales Analytics and (B) Product Variants, plus light regression. Backend: extended /app/backend/tests/backend_test.py with 9 new tests (TestSalesAnalytics x3, TestVariants x6); full suite 62/62 PASSED. Frontend: Playwright-verified admin dashboard analytics, storefront variant selector + stock messaging, cart variant separation/qty/remove, checkout per-variant oversell 400 surfaced as toast, Razorpay modal opening, admin variants editor (prefill/add/remove/auto-sum), non-variant product path, coupon rounding and admin order-status persistence. No functional defects found; only testability/UX gaps listed below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/cart/{product_id}", "issue": "Called without size/color it deletes EVERY line of that product. Harmless today (Cart.jsx always passes the variant), but a client omitting the params silently wipes all variant lines of the product."},
+      {"endpoint": "GET /api/admin/stats", "issue": "best_sellers is keyed by item NAME (not product_id), so two products sharing a name would merge, and variants of one product are aggregated into a single row (intended per spec, but name-keying is fragile). Also `revenue` (order totals after discount) and best_sellers `revenue` (gross line totals) are computed on different bases, so the two panels never reconcile."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Cart.jsx", "issue": "Variant lines of the SAME product reuse identical data-testids (cart-item-<pid>, cart-variant-<pid>, cart-qty-<pid>, cart-qty-plus/minus-<pid>, remove-<pid>) so two lines produce duplicate testids; tests must fall back to .nth(). Suffix with the variant key (e.g. cart-item-<pid>-M-Ivory).", "selector": "[data-testid^=\"cart-item-\"]", "priority": "LOW"},
+      {"component": "Orders.jsx + admin/AdminOrders.jsx", "issue": "Order line items never render the variant, although the backend persists items[].variant. A customer/admin cannot tell which size/color was purchased on an order.", "selector": "order item row", "priority": "MEDIUM"},
+      {"component": "Checkout.jsx / AdminOrders.jsx / Register.jsx / Login.jsx", "issue": "No data-testid on address inputs, coupon input, Apply, Pay button, per-order status dropdowns (16 role=combobox with no testid) or auth form fields; tests must rely on placeholders/text.", "selector": "input[placeholder=\"Address\"], button:has-text(\"Pay\")", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ProductDetail variant selector", "issues": ["An unavailable size+color combination (e.g. XS + Rose) reports the generic 'Out of stock' instead of 'This combination is unavailable'; unavailable sizes/colors are also not visually disabled for the current selection, so users hunt for valid pairs."]},
+      {"screen": "Admin dashboard - Revenue Last 14 Days", "issues": ["Chart renders 14 points but only 7 x-axis tick labels (every other day) and no data dots, so a single-day spike reads as a vertical wall; consider showing dots or a tooltip hint."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/cleanup_test_data.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Render items[].variant on customer Orders and admin Orders line items (MEDIUM).",
+    "Make cart data-testids variant-unique (append size/color) to remove duplicate testids.",
+    "Show a distinct 'Combination unavailable' state and disable impossible size/color pairs on ProductDetail.",
+    "Require size/color on DELETE /api/cart/{id} for variant products (or delete only the matching line) to avoid accidentally clearing all variant lines.",
+    "Add data-testid to checkout address/coupon/pay controls and admin order-status dropdowns."
+  ],
+  "critical_code_review_comments": [
+    "verify_payment decrements variants.$[v].stock AND stock in one $inc; because _prep_product recomputes stock as the variant sum on read, the stored stock field is now redundant/derived - keep one source of truth to avoid drift for products that later lose their variants.",
+    "checkout uses i['variant_stock'] computed at read time with no atomic reservation; two concurrent checkouts on the same variant can both pass the guard and drive variant stock negative. Use a conditional $inc ({'variants': {$elemMatch: {size, color, stock: {$gte: qty}}}}) at verify time.",
+    "admin_stats loads up to 1000 paid orders into memory and can issue a per-item products.find_one for legacy items with no category - move to an aggregation pipeline before order volume grows.",
+    "server.py is 821 lines; split routers (products/cart/orders/admin/email) into modules."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/cleanup_test_data.py"
+  ],
+  "success_rate": {"backend": "100% (62/62 pytest)", "frontend": "100% of tested flows passed (analytics, variant select, cart separation, oversell, admin editor, regression)"},
+  "seed_data_creation": "Registered throwaway customers (qa_var_*, qa_os*_*@example.com) and created/deleted TEST_ products via API. Ran /app/backend/tests/cleanup_test_data.py afterwards, which removed all TEST_ products, TEST_/qa_ orders, TEST_/qa_ customers and TEST_ reviews so admin analytics reflects real data again (8 products remain).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Admin ayanpratapsingh1@gmail.com / Admin@12345 (from /app/memory/test_credentials.md); customers registered fresh per run",
+  "context_for_next_testing_agent": "Verified this iteration: GET /api/admin/stats returns daily_revenue (exactly 14 chronological {date:'MM-DD',revenue} points, last = today UTC) and best_sellers (<=5, sorted by qty desc, keys name/qty/revenue/image). Storefront: 'Ivory Wrap Midi Dress' shows variant-selectors, stock-status 'Select options to check availability' -> 'In stock . 6 available' (M/Ivory) / 'In stock . 2 available' (L/Rose); Add to Bag before selection toasts 'Please select all options'; XS+Rose -> 'Out of stock' + button disabled. Cart shows 2 separate lines with labels 'M . Ivory' / 'L . Rose', + increments only that line (subtotal 7,497), trash removes only that line. Checkout with L/Rose x3 toasts 'Only 2 left of Ivory Wrap Midi Dress (L Rose)'; at qty 2 with WELCOME10 total 4,998-500=4,498 and the Razorpay checkout modal opens (rzp test-mode key). Admin Inventory edit prefills 5 variant rows and form-stock 24; add-variant-btn/remove work and total auto-sums (10 -> 4 after removing a row). Non-variant 'Ceramic Pour-Over Set' shows no variant-selectors and adds directly. Admin order status change to shipped persists after reload; the 858 WELCOME10 order is visible. NOT tested: a real completed Razorpay payment (LIVE keys) - variant stock decrement was proven via the /orders/verify path in pytest (TestVariants::test_variant_stock_decrement_on_paid) instead. Note: admin Inventory delete uses window.confirm, which Playwright auto-dismisses - accept the dialog explicitly.",
+  "rca_of_the_issue": "No defect required RCA. The one earlier test failure ('Please complete your address') was a test-script bug: the checkout address placeholder is exactly 'Address', not 'Address line'; fixed in the script and the oversell guard then reproduced correctly."
+}

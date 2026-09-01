@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 6 regression verification of the N+1 -> single-$in batch refactor (get_cart_detailed, get_wishlist, admin_stats). Backend: existing suite re-run 62/62 PASSED, then extended with a new TestBatchRefactor class (6 tests) covering mixed-cart batch fetch (2 variants of the SAME product + 2 other products => 4 lines, variant_stock M/Ivory=6 & L/Rose=2, correct subtotal, per-line qty update, per-variant delete), cart/wishlist lines whose product was deleted (skipped, no 500), wishlist exact-set + order preservation + toggle-off, and admin/stats cross-checked field-by-field against MongoDB (revenue, counts, category_revenue==gross line totals, 14 daily points, best_sellers<=5 sorted desc, low_stock<10, no _id leakage) plus the missing-category $in prefetch path. Final backend run: 68/68 PASSED. Frontend: Playwright verified storefront browse, gallery thumbs, variant selection stock messaging (6 / 2), two variants of same product as separate cart lines with variant-suffixed testids, per-line qty +/- and per-variant remove, subtotal math (8,996 -> 11,495), wishlist page count/order/persistence/empty-state, per-variant oversell 400 surfaced as 'Only 2 left of Ivory Wrap Midi Dress (L Rose)', WELCOME10 4,998->4,498 and Razorpay modal opening, admin dashboard analytics (all 6 panels with data), admin inventory create/delete + variants editor (5 prefilled rows, form-stock 24, add/remove), admin order status change persisting after reload (and order lines now render the variant '[L/Rose]' - iteration_5 MEDIUM issue is fixed). No regression found from the refactor.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/cart, GET /api/wishlist", "issue": "Batch $in queries are capped at .to_list(500); a cart/wishlist with >500 distinct products would silently drop lines instead of erroring. Practically unreachable today, but the cap is an implicit truncation."},
+      {"endpoint": "GET /api/wishlist", "issue": "Stale product_ids (product deleted) are filtered out of the response but never pruned from the wishlists document, so the id lingers forever and a re-toggle by the client is a no-op-then-add. Consider pruning on read."},
+      {"endpoint": "GET /api/admin/stats", "issue": "Still reads up to 1000 paid orders into memory (aggregation would be the real fix); also `revenue` (post-discount order totals, 59,999.2) and category_revenue/best_sellers (gross line totals, 74,999) are computed on different bases so the panels never reconcile. Pre-existing, unchanged by the refactor."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Cart.jsx", "issue": "cart-item-<pid>-<size>-<color> is now variant-unique (fixed), but the child controls cart-variant-<pid>, remove-<pid>, cart-qty-<pid>, cart-qty-plus/minus-<pid> are still keyed on product id only, so two variant lines of the same product produce duplicate testids; tests must scope inside the cart-item container.", "selector": "[data-testid^=\"remove-\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin dashboard", "issues": ["Recharts panels animate in from zero; on first paint the Category Split pie and Revenue-by-Category bars can look empty for ~1s (cosmetic).", "Revenue-by-Category / best_sellers use gross line revenue while the Revenue stat card uses discounted totals - the two numbers visibly disagree (59,999 vs 74,999) with no label explaining it."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/cleanup_test_data.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Razorpay is NOT live in this environment: backend/.env RAZORPAY_KEY_ID starts with rzp_test_ and the checkout modal renders a 'Test Mode' ribbon. If LIVE keys are expected, swap them before deploy (functionally the modal opens and order creation works).",
+    "Optional: suffix the remaining cart child data-testids with the variant key for unambiguous automation.",
+    "Optional: prune deleted-product ids from wishlists/carts documents on read instead of only filtering them from the response."
+  ],
+  "critical_code_review_comments": [
+    "get_cart_detailed builds obj_ids with duplicates when the same product appears as multiple variant lines; harmless for $in but dedupe (set) keeps the query minimal.",
+    "checkout still validates i['variant_stock'] read non-atomically; two concurrent checkouts on the same variant can both pass and drive variant stock negative. Use a conditional $inc with $elemMatch at verify time (carried over from iteration_5).",
+    "admin_stats should move to an aggregation pipeline; the $in prefetch removed the per-item find_one but the full 1000-order in-memory scan remains.",
+    "server.py is ~840 lines; split into products/cart/orders/admin/email routers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/frontend/src/pages/Wishlist.jsx",
+    "/app/frontend/src/pages/admin/AdminProducts.jsx"
+  ],
+  "success_rate": {"backend": "100% (68/68 pytest)", "frontend": "100% of tested flows passed"},
+  "seed_data_creation": "Registered throwaway customers (TEST_cust_*, qa_ref_*, qa_co_*, qa_wl_*@example.com), created/deleted TEST_ products via API and UI, seeded one paid order with a category-less item for the admin_stats prefetch test. Ran /app/backend/tests/cleanup_test_data.py afterwards (removed 31 QA orders and 58 QA customers); seeded catalog intact (8 products) and Ivory Wrap Midi Dress variants back to XS/5, S/7, M-Ivory/6, M-Rose/4, L-Rose/2 (total 24).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Admin ayanpratapsingh1@gmail.com / Admin@12345 (from /app/memory/test_credentials.md); customers registered fresh per run",
+  "context_for_next_testing_agent": "Refactor regression is clean - no functional change detected in cart/wishlist/admin-stats after the $in batching. New pytest class TestBatchRefactor in backend_test.py is the regression guard; it asserts against live Mongo (mongo_db fixture) so it self-adjusts to data volume. Frontend testids added this iteration: wishlist-grid, wishlist-empty (Wishlist.jsx) and remove-variant-<i> (AdminProducts.jsx variants editor). Useful selectors: cart lines are cart-item-<pid>-<size>-<color>; admin inventory rows admin-product-<pid> with edit-<pid>/delete-<pid> (delete uses window.confirm - register page.once('dialog', accept)); admin dashboard headings are uppercased via CSS so match case-insensitively. Razorpay key is rzp_test_*. Verified-review gating and email flows were covered by pytest only (no UI pass) this iteration. Always run /app/backend/tests/cleanup_test_data.py at the end - the admin dashboard best-sellers panel otherwise fills with TEST_ items and broken example.com images.",
+  "rca_of_the_issue": "No product defect required RCA. Two initial test failures were script issues: (1) admin dashboard section assertion failed because Tailwind uppercase transforms the headings in inner_text; (2) the inventory edit button testid is edit-<pid>, not edit-product-<pid>. The missing remove-variant testid was a genuine testability gap and was added."
+}
