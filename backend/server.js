@@ -45,13 +45,17 @@ const app = express();
 const apiRouter = express.Router();
 
 // CORS configuration
-const corsOrigins = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : '*';
-app.use(cors({
-  origin: corsOrigins === '*' ? '*' : corsOrigins,
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin or any web origin dynamically
+    callback(null, true);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['*']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
