@@ -55,6 +55,25 @@ app.use(cors({
 
 app.use(express.json());
 
+// Ensure database connection in serverless environments (e.g. Vercel)
+let dbInitPromise = null;
+app.use(async (req, res, next) => {
+  if (!db) {
+    if (!dbInitPromise) {
+      dbInitPromise = initDatabase().catch(err => {
+        dbInitPromise = null;
+        console.error('Database initialization error:', err);
+      });
+    }
+    try {
+      await dbInitPromise;
+    } catch (e) {
+      return res.status(500).json({ detail: 'Database connection error' });
+    }
+  }
+  next();
+});
+
 // Multer memory storage for uploads
 const uploadMiddleware = multer({
   storage: multer.memoryStorage(),
@@ -375,6 +394,17 @@ function sameVariant(a, b) {
   if (!a && !b) return true;
   if (!a || !b) return false;
   return (a.size || '') === (b.size || '') && (a.color || '') === (b.color || '');
+}
+
+function productStockAvailable(product, variant = null) {
+  if (!product) return 0;
+  if (variant && product.variants && product.variants.length > 0) {
+    return variantStock(product, variant);
+  }
+  if (product.variants && product.variants.length > 0) {
+    return product.variants.reduce((sum, v) => sum + parseInt(v.stock || 0, 10), 0);
+  }
+  return parseInt(product.stock || 0, 10);
 }
 
 // ---------------- Cart Detail Helper ----------------
@@ -710,18 +740,36 @@ apiRouter.post('/cart', getCurrentUser, async (req, res) => {
     if (!product) {
       return res.status(404).json({ detail: 'Product not found' });
     }
+
+    const available = productStockAvailable(product, variant);
     const cart = await db.collection('carts').findOne({ user_id: req.user.id });
     let items = cart?.items ? [...cart.items] : [];
+    let currentQty = 0;
+    for (const it of items) {
+      if (it.product_id === product_id && sameVariant(it.variant, variant)) {
+        currentQty = it.quantity;
+        break;
+      }
+    }
+
+    const requestedQty = Number(quantity || 0);
+    if (requestedQty <= 0) {
+      return res.status(400).json({ detail: 'Quantity must be greater than zero' });
+    }
+    if (currentQty + requestedQty > available) {
+      return res.status(400).json({ detail: `Only ${available} left of ${product.name}` });
+    }
+
     let found = false;
     for (const it of items) {
       if (it.product_id === product_id && sameVariant(it.variant, variant)) {
-        it.quantity += quantity;
+        it.quantity += requestedQty;
         found = true;
         break;
       }
     }
     if (!found) {
-      items.push({ product_id, quantity, variant });
+      items.push({ product_id, quantity: requestedQty, variant });
     }
     items = items.filter(it => it.quantity > 0);
     await db.collection('carts').updateOne(
@@ -740,11 +788,34 @@ apiRouter.post('/cart', getCurrentUser, async (req, res) => {
 apiRouter.put('/cart', getCurrentUser, async (req, res) => {
   try {
     const { product_id, quantity = 1, variant = null } = req.body;
+    const product = await db.collection('products').findOne({ _id: oid(product_id) });
+    if (!product) {
+      return res.status(404).json({ detail: 'Product not found' });
+    }
+
+    const requestedQty = Number(quantity || 0);
     const cart = await db.collection('carts').findOne({ user_id: req.user.id });
     let items = cart?.items ? [...cart.items] : [];
+
+    if (requestedQty <= 0) {
+      items = items.filter(it => !(it.product_id === product_id && sameVariant(it.variant, variant)));
+      await db.collection('carts').updateOne(
+        { user_id: req.user.id },
+        { $set: { items } },
+        { upsert: true }
+      );
+      const detailed = await getCartDetailed(req.user.id);
+      return res.json(detailed);
+    }
+
+    const available = productStockAvailable(product, variant);
+    if (requestedQty > available) {
+      return res.status(400).json({ detail: `Only ${available} left of ${product.name}` });
+    }
+
     for (const it of items) {
       if (it.product_id === product_id && sameVariant(it.variant, variant)) {
-        it.quantity = quantity;
+        it.quantity = requestedQty;
       }
     }
     items = items.filter(it => it.quantity > 0);
@@ -1462,18 +1533,18 @@ if (require.main === module) {
   });
 }
 
-module.exports = {
-  app,
-  getClient: () => client,
-  getDb: () => db,
-  initDatabase,
-  closeDatabase,
-  assertSafeEmail,
-  emailShell,
-  sendEmail,
-  hashPassword,
-  verifyPassword,
-  createAccessToken,
-  clean,
-  oid
-};
+app.app = app;
+app.getClient = () => client;
+app.getDb = () => db;
+app.initDatabase = initDatabase;
+app.closeDatabase = closeDatabase;
+app.assertSafeEmail = assertSafeEmail;
+app.emailShell = emailShell;
+app.sendEmail = sendEmail;
+app.hashPassword = hashPassword;
+app.verifyPassword = verifyPassword;
+app.createAccessToken = createAccessToken;
+app.clean = clean;
+app.oid = oid;
+
+module.exports = app;

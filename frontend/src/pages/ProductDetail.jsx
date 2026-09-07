@@ -23,6 +23,7 @@ export default function ProductDetail() {
   const [selColor, setSelColor] = useState("");
 
   const load = () => api.get(`/products/${id}`).then((r) => setProduct(r.data));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); window.scrollTo(0, 0); setActiveImg(0); setSelSize(""); setSelColor(""); }, [id]);
 
   if (!product) return <div className="py-40 text-center font-display text-xl">Loading…</div>;

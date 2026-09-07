@@ -377,6 +377,31 @@ describe('Cart & Wishlist APIs', () => {
     expect(res.body.length).toBe(0);
   });
 
+  test('Cart rejects quantities above available stock', async () => {
+    const stockProduct = await request(app)
+      .post('/api/products')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'TEST_ Stock Limited Item',
+        description: 'Stock test',
+        price: 250,
+        category: 'Electronics',
+        stock: 4
+      });
+
+    const res = await request(app)
+      .post('/api/cart')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ product_id: stockProduct.body.id, quantity: 5 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.detail).toMatch(/Only 4 left|Only 4/i);
+
+    await request(app)
+      .delete(`/api/products/${stockProduct.body.id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+  });
+
   test('Wishlist toggle and fetch flow', async () => {
     // Toggle ON
     let res = await request(app)
