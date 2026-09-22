@@ -1796,9 +1796,17 @@ apiRouter.get('/admin/stats', requireAdmin, async (req, res) => {
   }
 });
 
-// Root route
+// Root and Health routes
+apiRouter.get('/health', (req, res) => {
+  return res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
+});
+
 apiRouter.get('/', (req, res) => {
   return res.json({ message: 'Lumea Store API' });
+});
+
+app.get('/health', (req, res) => {
+  return res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
 app.use('/api', apiRouter);
@@ -1841,6 +1849,10 @@ async function initDatabase(customMongoUrl, customDbName) {
   await db.collection('users').createIndex({ email: 1 }, { unique: true });
   await db.collection('user_activities').createIndex({ user_id: 1, timestamp: -1 });
   await db.collection('user_activities').createIndex({ guest_id: 1, timestamp: -1 });
+  await db.collection('products').createIndex({ category: 1 });
+  await db.collection('products').createIndex({ featured: 1 });
+  await db.collection('products').createIndex({ stock: 1 });
+  await db.collection('orders').createIndex({ user_id: 1, created_at: -1 });
 
   const adminEmail = (process.env.ADMIN_EMAIL || 'admin@example.com').toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
@@ -1861,19 +1873,25 @@ async function initDatabase(customMongoUrl, customDbName) {
     );
   }
 
+  // Fast batch check for seed products (1 query instead of 88 sequential queries)
+  const existingProducts = await db.collection('products').find({}, { projection: { name: 1 } }).toArray();
+  const existingNames = new Set(existingProducts.map(p => p.name));
+  const toInsert = [];
   for (const p of SEED_PRODUCTS) {
-    const exists = await db.collection('products').findOne({ name: p.name });
-    if (!exists) {
+    if (!existingNames.has(p.name)) {
       const h = stringHash(p.name);
       const rating = Number((4.2 + 0.7 * (h % 10) / 10).toFixed(1));
       const reviewCount = (h % 40) + 5;
-      await db.collection('products').insertOne({
+      toInsert.push({
         ...p,
         rating,
         review_count: reviewCount,
         created_at: new Date().toISOString()
       });
     }
+  }
+  if (toInsert.length > 0) {
+    await db.collection('products').insertMany(toInsert);
   }
 
   const couponCount = await db.collection('coupons').countDocuments({});
