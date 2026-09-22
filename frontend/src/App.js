@@ -21,12 +21,14 @@ import Dashboard from "@/pages/admin/Dashboard";
 import AdminProducts from "@/pages/admin/AdminProducts";
 import AdminOrders from "@/pages/admin/AdminOrders";
 import AdminCoupons from "@/pages/admin/AdminCoupons";
+import AIChat from "@/components/AIChat";
 
 const Shell = ({ children }) => (
   <>
     <Navbar />
     <main className="min-h-[70vh]">{children}</main>
     <Footer />
+    <AIChat />
   </>
 );
 

@@ -712,3 +712,79 @@ describe('Email Safety Gate', () => {
     expect(() => assertSafeEmail('Link', '<a href="http://example.com">click</a>')).toThrow(/absolute https/);
   });
 });
+
+// ---------------- Personalization & AI Assistant Tests ----------------
+describe('Personalization & AI Shopping Assistant', () => {
+  let sampleProduct = null;
+
+  beforeAll(async () => {
+    const res = await request(app).get('/api/products');
+    if (res.body && res.body.length > 0) {
+      sampleProduct = res.body[0];
+    }
+  });
+
+  test('POST /api/user/activity tracks product view', async () => {
+    const res = await request(app)
+      .post('/api/user/activity')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({
+        product_id: sampleProduct?.id,
+        action: 'view',
+        category: sampleProduct?.category
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  test('GET /api/recommendations/personalized returns structured recommendation sections', async () => {
+    const res = await request(app)
+      .get('/api/recommendations/personalized')
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.welcomeBanner).toBeDefined();
+    expect(Array.isArray(res.body.recommendedForYou)).toBe(true);
+    expect(Array.isArray(res.body.trending)).toBe(true);
+    expect(res.body.signalsCount).toBeDefined();
+  });
+
+  test('POST /api/ai/chat returns real matching products under price constraint', async () => {
+    const res = await request(app)
+      .post('/api/ai/chat')
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({
+        message: 'I need a casual black shirt under ₹2000'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.reply).toBeDefined();
+    expect(Array.isArray(res.body.products)).toBe(true);
+    expect(res.body.products.length).toBeGreaterThan(0);
+    // Verify each returned product has real required fields and fits the price limit
+    res.body.products.forEach(p => {
+      expect(p.id).toBeDefined();
+      expect(p.name).toBeDefined();
+      expect(p.price).toBeLessThanOrEqual(2000);
+    });
+    expect(Array.isArray(res.body.suggestedQueries)).toBe(true);
+  });
+
+  test('POST /api/ai/chat returns running shoes for footwear query', async () => {
+    const res = await request(app)
+      .post('/api/ai/chat')
+      .send({
+        message: 'Show me running shoes under 3500'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.products.length).toBeGreaterThan(0);
+    const hasShoe = res.body.products.some(p =>
+      p.name.toLowerCase().includes('running') ||
+      p.name.toLowerCase().includes('shoes') ||
+      p.category === 'Footwear'
+    );
+    expect(hasShoe).toBe(true);
+  });
+});

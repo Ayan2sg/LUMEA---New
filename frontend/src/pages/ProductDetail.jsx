@@ -22,7 +22,17 @@ export default function ProductDetail() {
   const [selSize, setSelSize] = useState("");
   const [selColor, setSelColor] = useState("");
 
-  const load = () => api.get(`/products/${id}`).then((r) => setProduct(r.data));
+  const load = () =>
+    api.get(`/products/${id}`).then((r) => {
+      setProduct(r.data);
+      try {
+        const guestId = localStorage.getItem("lumea_guest_id") || "guest_" + Math.random().toString(36).substring(2, 9);
+        localStorage.setItem("lumea_guest_id", guestId);
+        api.post("/user/activity", { product_id: id, action: "view", guest_id: guestId }).catch(() => {});
+      } catch (e) {
+        // ignore tracking errors
+      }
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); window.scrollTo(0, 0); setActiveImg(0); setSelSize(""); setSelColor(""); }, [id]);
 

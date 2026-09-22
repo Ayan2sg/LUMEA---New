@@ -161,15 +161,24 @@ function requireAdmin(req, res, next) {
   });
 }
 
-function optionalCurrentUser(req, res, next) {
+async function optionalCurrentUser(req, res, next) {
   const authorization = req.headers.authorization;
   if (authorization && authorization.startsWith('Bearer ')) {
     const token = authorization.slice(7);
     try {
       const payload = jwt.verify(token, JWT_SECRET, { algorithms: [JWT_ALGORITHM] });
       req.userId = payload.sub;
+      if (db) {
+        const u = await db.collection('users').findOne({ _id: new ObjectId(payload.sub) });
+        if (u) {
+          const cleanUser = clean(u);
+          delete cleanUser.password_hash;
+          req.user = cleanUser;
+        }
+      }
     } catch (e) {
       req.userId = null;
+      req.user = null;
     }
   }
   next();
@@ -724,6 +733,458 @@ apiRouter.get('/files/*', async (req, res) => {
   } catch (err) {
     const status = err.response?.status || 500;
     return res.status(status === 404 ? 404 : 500).json({ detail: err.message });
+  }
+});
+
+// ---------------- Activity & Personalization Routes ----------------
+apiRouter.post('/user/activity', optionalCurrentUser, async (req, res) => {
+  try {
+    const { product_id, action = 'view', category, search_term, guest_id } = req.body;
+    const userId = req.userId || null;
+    const guestId = guest_id || req.headers['x-guest-id'] || null;
+
+    if (!userId && !guestId) {
+      return res.status(400).json({ detail: 'userId or guestId required' });
+    }
+
+    const doc = {
+      user_id: userId,
+      guest_id: guestId,
+      product_id: product_id || null,
+      action,
+      category: category || null,
+      search_term: search_term || null,
+      timestamp: new Date().toISOString()
+    };
+
+    if (product_id && !doc.category) {
+      try {
+        const prod = await db.collection('products').findOne({ _id: oid(product_id) });
+        if (prod) {
+          doc.category = prod.category;
+        }
+      } catch (e) {
+        // Ignore invalid ObjectId
+      }
+    }
+
+    await db.collection('user_activities').insertOne(doc);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ detail: err.message });
+  }
+});
+
+apiRouter.get('/recommendations/personalized', optionalCurrentUser, async (req, res) => {
+  try {
+    const userId = req.userId || null;
+    const guestId = req.query.guest_id || req.headers['x-guest-id'] || null;
+    const userDoc = req.user || (userId ? await db.collection('users').findOne({ _id: new ObjectId(userId) }) : null);
+
+    let userActivities = [];
+    let wishlistProductIds = [];
+    let cartProductIds = [];
+    let orderProductIds = [];
+
+    const activityFilter = userId
+      ? { $or: [{ user_id: userId }, ...(guestId ? [{ guest_id: guestId }] : [])] }
+      : (guestId ? { guest_id: guestId } : null);
+
+    if (activityFilter) {
+      userActivities = await db.collection('user_activities')
+        .find(activityFilter)
+        .sort({ timestamp: -1 })
+        .limit(30)
+        .toArray();
+    }
+
+    if (userId) {
+      const [wl, cart, orders] = await Promise.all([
+        db.collection('wishlists').findOne({ user_id: userId }),
+        db.collection('carts').findOne({ user_id: userId }),
+        db.collection('orders').find({ user_id: userId }).sort({ created_at: -1 }).limit(10).toArray()
+      ]);
+
+      if (wl?.product_ids) wishlistProductIds = wl.product_ids.map(id => id.toString());
+      if (cart?.items) cartProductIds = cart.items.map(it => it.product_id.toString());
+      if (orders?.length) {
+        orders.forEach(o => {
+          (o.items || []).forEach(it => {
+            if (it.product_id) orderProductIds.push(it.product_id.toString());
+          });
+        });
+      }
+    }
+
+    const allProducts = await db.collection('products').find({ stock: { $gt: 0 } }).toArray();
+    const productsMap = new Map();
+    allProducts.forEach(p => productsMap.set(p._id.toString(), p));
+
+    const categoryWeights = {};
+    const tagWeights = {};
+    let priceSum = 0;
+    let priceCount = 0;
+
+    const addWeight = (p, weight) => {
+      if (!p) return;
+      if (p.category) {
+        categoryWeights[p.category] = (categoryWeights[p.category] || 0) + weight;
+      }
+      (p.tags || []).forEach(t => {
+        tagWeights[t] = (tagWeights[t] || 0) + weight;
+      });
+      if (p.price) {
+        priceSum += p.price * weight;
+        priceCount += weight;
+      }
+    };
+
+    userActivities.forEach(act => {
+      const p = act.product_id ? productsMap.get(act.product_id.toString()) : null;
+      const w = act.action === 'cart_add' ? 4 : act.action === 'wishlist_add' ? 3 : 2;
+      if (p) addWeight(p, w);
+      else if (act.category) categoryWeights[act.category] = (categoryWeights[act.category] || 0) + 1.5;
+    });
+
+    wishlistProductIds.forEach(id => addWeight(productsMap.get(id), 3));
+    cartProductIds.forEach(id => addWeight(productsMap.get(id), 4));
+    orderProductIds.forEach(id => addWeight(productsMap.get(id), 5));
+
+    const avgPreferredPrice = priceCount > 0 ? (priceSum / priceCount) : null;
+
+    // Recently Viewed
+    const seenViewIds = new Set();
+    const recentlyViewed = [];
+    userActivities.forEach(act => {
+      if (act.product_id && !seenViewIds.has(act.product_id.toString())) {
+        const prod = productsMap.get(act.product_id.toString());
+        if (prod) {
+          seenViewIds.add(act.product_id.toString());
+          recentlyViewed.push(clean(prod));
+        }
+      }
+    });
+
+    // "Because you viewed X"
+    let becauseYouViewed = null;
+    if (recentlyViewed.length > 0) {
+      const baseProduct = recentlyViewed[0];
+      const similar = allProducts
+        .filter(p => p._id.toString() !== baseProduct.id)
+        .map(p => {
+          let score = 0;
+          if (p.category === baseProduct.category) score += 5;
+          const commonTags = (p.tags || []).filter(t => (baseProduct.tags || []).includes(t));
+          score += commonTags.length * 3;
+          if (baseProduct.price && p.price) {
+            const priceDiffRatio = Math.abs(p.price - baseProduct.price) / baseProduct.price;
+            score += Math.max(0, 3 * (1 - priceDiffRatio));
+          }
+          return { product: clean(p), score };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 4)
+        .map(s => s.product);
+
+      if (similar.length > 0) {
+        becauseYouViewed = {
+          baseProduct: { id: baseProduct.id, name: baseProduct.name, category: baseProduct.category },
+          items: similar
+        };
+      }
+    }
+
+    // "Based on your Wishlist"
+    let basedOnWishlist = [];
+    if (wishlistProductIds.length > 0) {
+      const wishlistSet = new Set(wishlistProductIds);
+      const wishlistProds = wishlistProductIds.map(id => productsMap.get(id)).filter(Boolean);
+      const wishlistCategories = new Set(wishlistProds.map(p => p.category).filter(Boolean));
+      const wishlistTags = new Set(wishlistProds.flatMap(p => p.tags || []));
+
+      basedOnWishlist = allProducts
+        .filter(p => !wishlistSet.has(p._id.toString()))
+        .map(p => {
+          let score = 0;
+          if (wishlistCategories.has(p.category)) score += 4;
+          const commonTags = (p.tags || []).filter(t => wishlistTags.has(t));
+          score += commonTags.length * 2.5;
+          score += (p.rating || 4) * 0.5;
+          return { product: clean(p), score };
+        })
+        .filter(s => s.score > 2)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 4)
+        .map(s => s.product);
+    }
+
+    // "Recommended For You"
+    const excludeIds = new Set([
+      ...wishlistProductIds,
+      ...cartProductIds,
+      ...(becauseYouViewed?.items?.map(p => p.id) || [])
+    ]);
+
+    const scoredProducts = allProducts.map(p => {
+      const pid = p._id.toString();
+      let score = 0;
+      if (categoryWeights[p.category]) {
+        score += categoryWeights[p.category] * 3;
+      }
+      (p.tags || []).forEach(t => {
+        if (tagWeights[t]) score += tagWeights[t] * 2;
+      });
+      if (avgPreferredPrice && p.price) {
+        const diffRatio = Math.abs(p.price - avgPreferredPrice) / avgPreferredPrice;
+        score += Math.max(0, 3 * (1 - diffRatio));
+      }
+      if (p.featured) score += 2;
+      score += (p.rating || 4) * 0.5;
+      if (excludeIds.has(pid)) score -= 1;
+
+      return { product: clean(p), score };
+    });
+
+    scoredProducts.sort((a, b) => b.score - a.score);
+    const recommendedForYou = scoredProducts.slice(0, 8).map(s => s.product);
+
+    // Trending & Top Rated
+    const trending = allProducts
+      .map(clean)
+      .sort((a, b) => ((b.rating || 0) * 10 + (b.review_count || 0)) - ((a.rating || 0) * 10 + (a.review_count || 0)))
+      .slice(0, 6);
+
+    const firstName = userDoc?.name ? userDoc.name.trim().split(/\s+/)[0] : null;
+    const welcomeBanner = firstName
+      ? `Welcome back, ${firstName} 👋`
+      : 'Curated for you, designed for life.';
+
+    return res.json({
+      user: {
+        name: userDoc?.name || null,
+        firstName,
+        isAuthenticated: !!userDoc
+      },
+      welcomeBanner,
+      becauseYouViewed,
+      recommendedForYou,
+      basedOnWishlist,
+      recentlyViewed: recentlyViewed.slice(0, 6),
+      trending,
+      signalsCount: {
+        views: userActivities.length,
+        wishlist: wishlistProductIds.length,
+        cart: cartProductIds.length,
+        orders: orderProductIds.length
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ detail: err.message });
+  }
+});
+
+// ---------------- AI Shopping Assistant Routes ----------------
+apiRouter.post('/ai/chat', optionalCurrentUser, async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      return res.status(400).json({ detail: 'Message cannot be empty' });
+    }
+
+    const userId = req.userId || null;
+    const cleanQuery = message.trim();
+    const queryLower = cleanQuery.toLowerCase();
+
+    let userContext = null;
+    if (userId) {
+      const [user, orders, wishlist, cart] = await Promise.all([
+        db.collection('users').findOne({ _id: new ObjectId(userId) }),
+        db.collection('orders').find({ user_id: userId }).sort({ created_at: -1 }).limit(5).toArray(),
+        db.collection('wishlists').findOne({ user_id: userId }),
+        db.collection('carts').findOne({ user_id: userId })
+      ]);
+      userContext = {
+        name: user?.name ? user.name.trim().split(/\s+/)[0] : 'friend',
+        orders: orders || [],
+        wishlistIds: wishlist?.product_ids ? wishlist.product_ids.map(id => id.toString()) : [],
+        cartIds: cart?.items ? cart.items.map(it => it.product_id.toString()) : []
+      };
+    }
+
+    const allProducts = await db.collection('products').find({}).toArray();
+
+    // Natural Language Criteria Extraction
+    let maxPrice = null;
+    let minPrice = null;
+
+    // Match numbers with optional 'k' (e.g. 2k = 2000, 3.5k = 3500)
+    const parsePriceStr = (numStr, hasK) => {
+      const n = parseFloat(numStr.replace(/,/g, ''));
+      return hasK ? Math.round(n * 1000) : Math.round(n);
+    };
+
+    const underMatch = queryLower.match(/(?:under|below|less than|within|up to|cheaper than)\s*(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)\s*(k)?/i);
+    if (underMatch) {
+      maxPrice = parsePriceStr(underMatch[1], !!underMatch[2]);
+    }
+    const aboveMatch = queryLower.match(/(?:above|over|more than|at least|minimum)\s*(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)\s*(k)?/i);
+    if (aboveMatch) {
+      minPrice = parsePriceStr(aboveMatch[1], !!aboveMatch[2]);
+    }
+    const betweenMatch = queryLower.match(/(?:between|from)\s*(?:₹|rs\.?|inr)?\s*(\d+)\s*(?:and|to|-)\s*(?:₹|rs\.?|inr)?\s*(\d+)/i);
+    if (betweenMatch) {
+      minPrice = parseInt(betweenMatch[1], 10);
+      maxPrice = parseInt(betweenMatch[2], 10);
+    }
+
+    const categoryKeywords = {
+      'Fashion': ['shirt', 'shirts', 'dress', 'dresses', 'hat', 'clothing', 'apparel', 'co-ord', 'wear', 'outfit', 'top', 'tops', 'pant', 'pants'],
+      'Footwear': ['shoe', 'shoes', 'sneaker', 'sneakers', 'runner', 'runners', 'footwear', 'running', 'boots', 'jogging'],
+      'Electronics': ['phone', 'phones', 'tablet', 'tablets', 'laptop', 'laptops', 'device', 'gadget', 'ipad', 'iphone', 'creator', 'oled'],
+      'Lifestyle': ['bag', 'bags', 'tote', 'totes', 'coffee', 'pour-over', 'ceramic', 'decor', 'kitchen', 'home', 'canvas']
+    };
+
+    const colors = ['black', 'white', 'ivory', 'sand', 'rose', 'navy', 'grey', 'gray', 'red', 'blue', 'green', 'titanium'];
+    const detectedColors = colors.filter(c => new RegExp(`\\b${c}\\b`, 'i').test(queryLower));
+
+    const isPastOrderQuery = /(bought|purchased|previous order|past order|order history|last month|my orders)/i.test(queryLower);
+    const isWishlistQuery = /(wishlist|saved|favorite|favorites)/i.test(queryLower);
+
+    let matchedProducts = [];
+    let personalizedReason = '';
+
+    if (isPastOrderQuery && userContext && userContext.orders.length > 0) {
+      const purchasedCategories = new Set();
+      const purchasedTags = new Set();
+      const purchasedNames = [];
+
+      userContext.orders.forEach(o => {
+        (o.items || []).forEach(it => {
+          purchasedNames.push(it.name || it.product_name);
+          const orig = allProducts.find(p => p._id.toString() === it.product_id?.toString() || p.name === it.name);
+          if (orig) {
+            if (orig.category) purchasedCategories.add(orig.category);
+            (orig.tags || []).forEach(t => purchasedTags.add(t));
+          }
+        });
+      });
+
+      personalizedReason = `Recommendations based on your previous order (${purchasedNames.slice(0, 2).join(', ')})`;
+      matchedProducts = allProducts.filter(p => {
+        if (purchasedCategories.has(p.category)) return true;
+        return (p.tags || []).some(t => purchasedTags.has(t));
+      });
+    } else if (isWishlistQuery && userContext && userContext.wishlistIds.length > 0) {
+      personalizedReason = `Your saved wishlist picks`;
+      matchedProducts = allProducts.filter(p => userContext.wishlistIds.includes(p._id.toString()));
+    } else {
+      const stopWords = new Set(['i', 'need', 'a', 'an', 'the', 'under', 'below', 'in', 'for', 'show', 'me', 'with', 'and', 'or', 'of', 'to', 'some', 'any', 'find', 'get', 'give', 'looking']);
+      const searchTerms = queryLower
+        .replace(/[^\w\s₹]/g, ' ')
+        .split(/\s+/)
+        .filter(t => t.length > 1 && !stopWords.has(t));
+
+      const scored = allProducts.map(prod => {
+        let score = 0;
+        const nameLower = prod.name.toLowerCase();
+        const descLower = (prod.description || '').toLowerCase();
+        const catLower = (prod.category || '').toLowerCase();
+        const tagsLower = (prod.tags || []).map(t => t.toLowerCase());
+
+        if (maxPrice !== null && prod.price > maxPrice) return { prod, score: -1 };
+        if (minPrice !== null && prod.price < minPrice) return { prod, score: -1 };
+
+        if (detectedColors.length > 0) {
+          const hasColor = detectedColors.some(c =>
+            nameLower.includes(c) ||
+            descLower.includes(c) ||
+            (prod.variants || []).some(v => v.color?.toLowerCase() === c)
+          );
+          if (hasColor) score += 9;
+        }
+
+        searchTerms.forEach(term => {
+          if (nameLower.includes(term)) score += 10;
+          if (catLower.includes(term)) score += 6;
+          if (tagsLower.includes(term)) score += 7;
+          if (descLower.includes(term)) score += 3;
+        });
+
+        for (const [cat, keywords] of Object.entries(categoryKeywords)) {
+          if (keywords.some(k => queryLower.includes(k))) {
+            if (prod.category === cat) score += 6;
+          }
+        }
+
+        if (prod.stock > 0) score += 2;
+        score += (prod.rating || 4) * 0.2;
+
+        return { prod, score };
+      });
+
+      matchedProducts = scored
+        .filter(item => item.score > 2)
+        .sort((a, b) => b.score - a.score)
+        .map(item => item.prod);
+    }
+
+    if (maxPrice !== null) {
+      matchedProducts = matchedProducts.filter(p => p.price <= maxPrice);
+    }
+    if (minPrice !== null) {
+      matchedProducts = matchedProducts.filter(p => p.price >= minPrice);
+    }
+
+    let fallback = false;
+    if (matchedProducts.length === 0) {
+      fallback = true;
+      matchedProducts = allProducts
+        .filter(p => (maxPrice ? p.price <= maxPrice : true))
+        .slice(0, 4);
+      if (matchedProducts.length === 0) {
+        matchedProducts = allProducts.slice(0, 4);
+      }
+    }
+
+    const finalProducts = matchedProducts.slice(0, 5).map(clean);
+
+    let reply = '';
+    const greeting = userContext?.name ? `Hi ${userContext.name}! ` : '';
+
+    if (isPastOrderQuery) {
+      reply = `${greeting}Looking back at your order history, I selected ${finalProducts.length} pieces that complement your aesthetic and past choices.`;
+    } else if (isWishlistQuery) {
+      reply = `${greeting}Here are pieces directly matching your saved wishlist:`;
+    } else if (fallback) {
+      const priceTxt = maxPrice ? ` under ₹${maxPrice.toLocaleString('en-IN')}` : '';
+      reply = `${greeting}I couldn't find an exact match for "${cleanQuery}", but here are our top-rated recommendations${priceTxt} from the catalog:`;
+    } else {
+      const priceText = maxPrice ? ` under ₹${maxPrice.toLocaleString('en-IN')}` : '';
+      const colorText = detectedColors.length > 0 ? ` in ${detectedColors.join(', ')}` : '';
+      reply = `${greeting}I found ${finalProducts.length} curated ${finalProducts.length === 1 ? 'piece' : 'pieces'}${colorText}${priceText} that match your style:`;
+    }
+
+    const suggestedQueries = [
+      'Show running shoes under ₹3000',
+      'Casual black shirt under ₹2000',
+      'What are your top-rated pieces?',
+      userContext ? 'Recommend based on my past orders' : 'Best gifts under ₹1500'
+    ];
+
+    return res.json({
+      reply,
+      products: finalProducts,
+      suggestedQueries,
+      meta: {
+        totalMatches: finalProducts.length,
+        maxPrice,
+        minPrice,
+        detectedColors,
+        personalizedReason
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ detail: err.message });
   }
 });
 
@@ -1427,6 +1888,58 @@ const SEED_PRODUCTS = [
       'https://images.unsplash.com/photo-1773394472792-a3a2f9a85d2e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxjZXJhbWljJTIwcG91ciUyMG92ZXIlMjBjb2ZmZWUlMjBzZXR8ZW58MHx8fHwxNzg3ODI1NjcyfDA&ixlib=rb-4.1.0&q=85'
     ],
     tags: ['home']
+  },
+  {
+    name: 'Casual Black Poplin Shirt', category: 'Fashion', price: 1499, stock: 35, featured: true,
+    description: 'Crisp poplin casual shirt tailored in an easy silhouette. Finished with mother-of-pearl buttons and breathable cotton weave for everyday wear.',
+    images: [
+      'https://images.unsplash.com/photo-1602810318383-e386cc2a3ccf?crop=entropy&cs=srgb&fm=jpg&q=85&w=940',
+      'https://images.unsplash.com/photo-1620012253295-c15c429f66bf?crop=entropy&cs=srgb&fm=jpg&q=85&w=940'
+    ],
+    variants: [
+      { size: 'S', color: 'Black', stock: 10 }, { size: 'M', color: 'Black', stock: 15 },
+      { size: 'L', color: 'Black', stock: 10 }
+    ],
+    tags: ['shirt', 'black', 'casual', 'men', 'top']
+  },
+  {
+    name: 'Linen Vacation Relaxed Shirt', category: 'Fashion', price: 1899, stock: 25, featured: false,
+    description: 'Breezy washed linen shirt designed for casual comfort. Features a camp collar and relaxed drape in coastal tones.',
+    images: [
+      'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?crop=entropy&cs=srgb&fm=jpg&q=85&w=940',
+      'https://images.unsplash.com/photo-1602810318383-e386cc2a3ccf?crop=entropy&cs=srgb&fm=jpg&q=85&w=940'
+    ],
+    variants: [
+      { size: 'M', color: 'White', stock: 12 }, { size: 'L', color: 'White', stock: 8 },
+      { size: 'XL', color: 'Navy', stock: 5 }
+    ],
+    tags: ['shirt', 'casual', 'linen', 'summer']
+  },
+  {
+    name: 'Minimalist Cloud Running Shoes', category: 'Footwear', price: 2799, stock: 20, featured: true,
+    description: 'Featherlight performance road running sneakers featuring engineered mesh upper, responsive foam cushioning, and high-traction rubber outsole.',
+    images: [
+      'https://images.unsplash.com/photo-1542291026-7eec264c27ff?crop=entropy&cs=srgb&fm=jpg&q=85&w=940',
+      'https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?crop=entropy&cs=srgb&fm=jpg&q=85&w=940'
+    ],
+    variants: [
+      { size: 'UK 7', color: 'Black', stock: 5 }, { size: 'UK 8', color: 'Black', stock: 8 },
+      { size: 'UK 9', color: 'Black', stock: 7 }
+    ],
+    tags: ['shoes', 'running', 'sneakers', 'footwear', 'black']
+  },
+  {
+    name: 'AeroStride Daily Runners', category: 'Footwear', price: 3199, stock: 18, featured: false,
+    description: 'All-weather engineered running sneakers built for daily miles and street style. Supportive arch design with breathable knit.',
+    images: [
+      'https://images.unsplash.com/photo-1460353581641-37baddab0fa2?crop=entropy&cs=srgb&fm=jpg&q=85&w=940',
+      'https://images.unsplash.com/photo-1542291026-7eec264c27ff?crop=entropy&cs=srgb&fm=jpg&q=85&w=940'
+    ],
+    variants: [
+      { size: 'UK 8', color: 'White', stock: 6 }, { size: 'UK 9', color: 'White', stock: 8 },
+      { size: 'UK 10', color: 'Grey', stock: 4 }
+    ],
+    tags: ['shoes', 'running', 'sneakers', 'footwear', 'white']
   }
 ];
 
@@ -1463,6 +1976,8 @@ async function initDatabase(customMongoUrl, customDbName) {
   db = client.db(dbName);
 
   await db.collection('users').createIndex({ email: 1 }, { unique: true });
+  await db.collection('user_activities').createIndex({ user_id: 1, timestamp: -1 });
+  await db.collection('user_activities').createIndex({ guest_id: 1, timestamp: -1 });
 
   const adminEmail = (process.env.ADMIN_EMAIL || 'admin@example.com').toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
@@ -1483,9 +1998,9 @@ async function initDatabase(customMongoUrl, customDbName) {
     );
   }
 
-  const productCount = await db.collection('products').countDocuments({});
-  if (productCount === 0) {
-    for (const p of SEED_PRODUCTS) {
+  for (const p of SEED_PRODUCTS) {
+    const exists = await db.collection('products').findOne({ name: p.name });
+    if (!exists) {
       const h = stringHash(p.name);
       const rating = Number((4.2 + 0.7 * (h % 10) / 10).toFixed(1));
       const reviewCount = (h % 40) + 5;
